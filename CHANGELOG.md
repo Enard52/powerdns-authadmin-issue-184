@@ -6,6 +6,11 @@ All notable changes to this project are documented here. The format is based on
 
 ## [Unreleased]
 
+## [1.9.1] - 2026-10-17
+
+Focus fix for the Create zone form. **No schema change, no migration.** Pull the new
+tag and recreate the container.
+
 ### Fixed
 
 - **Zone name input lost focus after the first character on Create zone.** The shared

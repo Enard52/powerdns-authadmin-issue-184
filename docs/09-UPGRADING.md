@@ -39,6 +39,13 @@ half-migrated schema; fix the cause and restart.
 
 ## Version-specific notes
 
+### Upgrading to 1.9.1 (from 1.9.0)
+
+No migration, no schema change, no config change - pull the new tag and
+recreate the container. The Zone name input on Create zone keeps focus while
+you type (it dropped it after the first character). See the
+[CHANGELOG](../CHANGELOG.md#191---2026-10-17).
+
 ### Upgrading to 1.9.0 (from 1.8.4)
 
 No schema change, no migration. Pull the new tag and recreate the container.
