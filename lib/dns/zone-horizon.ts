@@ -44,7 +44,7 @@ const PRIVATE_USE_ZONE_SUFFIXES = [
 
 /** Whether an unclassified zone name is reserved for private/local use. */
 export function isPrivateUseZoneName(zoneName: string): boolean {
-  const normalized = `${zoneName.trim().toLowerCase().replace(/\\.+$/, "")}.`;
+  const normalized = `${zoneName.trim().toLowerCase().replace(/\.+$/, "")}.`;
   return PRIVATE_USE_ZONE_SUFFIXES.some((suffix) => normalized.endsWith(suffix));
 }
 
