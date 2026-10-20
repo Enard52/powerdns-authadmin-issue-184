@@ -2185,4 +2185,3 @@ function RowDetail({
     </div>
   );
 }
-
