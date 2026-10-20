@@ -1,7 +1,9 @@
 import { describe, expect, it } from "vitest";
 import {
-  DEFAULT_ZONE_HORIZON,`n  defaultZoneHorizonForName,
-  ZONE_HORIZONS,`n  isPrivateUseZoneName,
+  DEFAULT_ZONE_HORIZON,
+  defaultZoneHorizonForName,
+  ZONE_HORIZONS,
+  isPrivateUseZoneName,
   isZoneHorizon,
   toZoneHorizon,
   zoneHorizonLabel,
