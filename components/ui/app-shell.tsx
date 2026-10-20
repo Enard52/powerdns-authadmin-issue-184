@@ -31,10 +31,13 @@ export const MAIN_CONTENT_ID = "main-content";
 export function AppShell({
   sidebar,
   headerControls,
+  headerCenter,
   children,
 }: {
   sidebar: React.ReactNode;
   headerControls: React.ReactNode;
+  /** Sits in the middle of the top bar (the search pill); right-aligned on phones. */
+  headerCenter?: React.ReactNode;
   children: React.ReactNode;
 }) {
   const [open, setOpen] = useState(false);
@@ -44,6 +47,30 @@ export function AppShell({
   const pathname = usePathname();
   const asideRef = useRef<HTMLElement>(null);
   const hamburgerRef = useRef<HTMLButtonElement>(null);
+  const headerRef = useRef<HTMLElement>(null);
+  const headerLeftRef = useRef<HTMLDivElement>(null);
+  const headerRightRef = useRef<HTMLDivElement>(null);
+
+  // The search pill sits centred in the header with equal space on both
+  // sides, so both side columns take the width of the wider side (the status
+  // chip or the controls, whose width follows the user's name). Measured
+  // here and handed to the grid as a CSS variable: setting a property through
+  // the CSSOM is not an inline style attribute, so the CSP is unaffected.
+  useEffect(() => {
+    const header = headerRef.current;
+    const left = headerLeftRef.current;
+    const right = headerRightRef.current;
+    if (!header || !left || !right) return;
+    const update = () => {
+      const side = Math.ceil(Math.max(left.scrollWidth, right.scrollWidth));
+      header.style.setProperty("--header-side", `${side}px`);
+    };
+    update();
+    const observer = new ResizeObserver(update);
+    observer.observe(left);
+    observer.observe(right);
+    return () => observer.disconnect();
+  }, []);
   const wasOpen = useRef(false);
 
   useEffect(() => {
@@ -115,21 +142,49 @@ export function AppShell({
 
       {/* Main column. */}
       <div className="flex min-w-0 flex-1 flex-col">
-        <header className="flex h-14 shrink-0 items-center gap-3 border-b border-[color:var(--color-border)] bg-[color:var(--color-bg)] px-4">
-          <button
-            ref={hamburgerRef}
-            type="button"
-            onClick={() => setOpen(true)}
-            aria-label="Open navigation"
-            aria-expanded={open}
-            className="-ml-1 rounded-md p-2 text-[color:var(--color-fg-muted)] hover:bg-[color:var(--color-bg-subtle)] hover:text-[color:var(--color-fg)] md:hidden"
+        {/* From xl, three columns: two equal sides (the wider of the chip and
+            the controls, see --header-side above) and the search filling the
+            middle, so it starts and ends the same distance from the header's
+            edges. Narrower, equal sides would leave the search no room, so it
+            fills the space between the chip and the controls instead. */}
+        {/* z-20: the blur makes the header its own stacking context, which
+            traps the bell and user menus inside it; without a layer of its
+            own, positioned cards in <main> painted over those menus. It stays
+            under the mobile drawer (z-30 backdrop, z-40 drawer). */}
+        <header
+          ref={headerRef}
+          className="relative z-20 flex h-14 shrink-0 items-center gap-3 border-b border-[color:var(--color-border)] bg-[color:var(--color-bg)]/80 px-4 backdrop-blur-md [--header-side:14rem] xl:grid xl:grid-cols-[var(--header-side)_minmax(0,1fr)_var(--header-side)] xl:gap-6"
+        >
+          <div ref={headerLeftRef} className="flex min-w-0 items-center gap-3 xl:w-max">
+            <button
+              ref={hamburgerRef}
+              type="button"
+              onClick={() => setOpen(true)}
+              aria-label="Open navigation"
+              aria-expanded={open}
+              className="-ml-1 rounded-md p-2 text-[color:var(--color-fg-muted)] hover:bg-[color:var(--color-bg-subtle)] hover:text-[color:var(--color-fg)] md:hidden"
+            >
+              <Menu className="h-5 w-5" aria-hidden />
+            </button>
+            {/* Single SSE chip for the whole app - its label is driven per page
+                via <HeaderStatusMode/> in components that own a "synced" notion. */}
+            <HeaderStatusChip />
+          </div>
+          {/* From lg the search takes 60% of the middle space, centred (margin:
+              0 auto), so it scales with the window; capped at 60% of 48rem so
+              it stays a search box on very wide screens. Narrower, the space
+              beside the chip is already tight, so it takes all of it. */}
+          <div className="flex min-w-0 flex-1 justify-end md:justify-center">
+            <div className="flex justify-end md:mx-auto md:w-full md:justify-center lg:w-3/5 lg:max-w-[28.8rem] lg:min-w-[12rem]">
+              {headerCenter}
+            </div>
+          </div>
+          <div
+            ref={headerRightRef}
+            className="flex items-center justify-end gap-3 xl:w-max xl:justify-self-end"
           >
-            <Menu className="h-5 w-5" aria-hidden />
-          </button>
-          {/* Single SSE chip for the whole app - its label is driven per page
-              via <HeaderStatusMode/> in components that own a "synced" notion. */}
-          <HeaderStatusChip />
-          <div className="ml-auto flex items-center gap-3">{headerControls}</div>
+            {headerControls}
+          </div>
         </header>
 
         {/* `min-h-0` is the canonical flexbox-clipping fix: a `flex-1` child

@@ -32,6 +32,7 @@ import type {
   SearchScope,
   SearchTabVisibility,
 } from "./types";
+import { LOG_GROUPS } from "./types";
 
 export * from "./types";
 
@@ -45,6 +46,11 @@ export interface ZoneSourceRow {
   clusterSlug: string | null;
   horizon: string;
   kind: string;
+  /** Detail shown on the result, when the scan knows it. */
+  dnssec?: boolean;
+  serial?: number | null;
+  /** RRsets in the zone; only when its detail has been read. */
+  rrsetCount?: number;
 }
 
 export interface RecordSourceRow {
@@ -55,6 +61,27 @@ export interface RecordSourceRow {
   name: string;
   type: string;
   contents: string[];
+  /** Detail shown on the result, when the scan knows it. */
+  horizon?: string;
+  ttl?: number;
+  /** How many of `contents` are disabled. */
+  disabledCount?: number;
+}
+
+/**
+ * Meta that says where a zone or record lives: its backend (a cluster or a
+ * standalone server) and horizon, so two same-named hits are told apart.
+ */
+function placementMeta(row: {
+  serverSlug: string;
+  clusterSlug: string | null;
+  horizon?: string;
+}): Record<string, string> {
+  return {
+    backend: row.clusterSlug ?? row.serverSlug,
+    backendType: row.clusterSlug ? "cluster" : "standalone",
+    ...(row.horizon ? { horizon: row.horizon } : {}),
+  };
 }
 
 export interface SearchSources {
@@ -364,7 +391,13 @@ async function searchZones(
           kind: "zone",
           title,
           subtitle: [z.kind, backend, z.horizon].filter(Boolean).join(" · "),
-          meta: { backend, horizon: z.horizon, kind: z.kind },
+          meta: {
+            ...placementMeta(z),
+            kind: z.kind,
+            ...(z.dnssec === undefined ? {} : { dnssec: z.dnssec ? "signed" : "unsigned" }),
+            ...(z.serial == null ? {} : { serial: String(z.serial) }),
+            ...(z.rrsetCount === undefined ? {} : { rrsets: String(z.rrsetCount) }),
+          },
           href: zoneHref(z.name, z.serverSlug, z.clusterSlug),
         },
         m,
@@ -411,7 +444,15 @@ async function searchRecords(
           kind: "record",
           title,
           subtitle: content,
-          meta: { type: rr.type, content: `${content}${more}`, zone: withoutDot(rr.zone) },
+          meta: {
+            type: rr.type,
+            content: `${content}${more}`,
+            zone: withoutDot(rr.zone),
+            ...placementMeta(rr),
+            ...(rr.ttl === undefined ? {} : { ttl: String(rr.ttl) }),
+            ...(rr.contents.length > 1 ? { values: String(rr.contents.length) } : {}),
+            ...(rr.disabledCount ? { disabled: String(rr.disabledCount) } : {}),
+          },
           href: zoneHref(rr.zone, rr.serverSlug, rr.clusterSlug, filter),
         },
         match,
@@ -730,8 +771,10 @@ export interface SearchEverythingInput {
 /**
  * Run one search across every source the user may read.
  *
- * Every visible source is matched even for a single-tab scope, because the
- * tab row shows each tab's count; only the returned groups narrow to `scope`.
+ * Zones, records and config are matched for every scope, because the tab row
+ * shows their counts; only the returned groups narrow to `scope`. The request
+ * and audit logs are matched only when their own scope is chosen: "All" never
+ * includes them, so the everyday search stays small and fast.
  *
  * @returns groups (non-empty ones, in tab order) and per-tab match counts.
  */
@@ -750,14 +793,24 @@ export async function searchEverything(input: SearchEverythingInput): Promise<Se
   const visibility = searchTabVisibility(auth);
 
   const results = await Promise.all(
-    GROUP_ORDER.map(async (key) =>
-      visibility[key] ? { key, items: await SEARCHERS[key](q, auth, sources) } : { key, items: [] },
-    ),
+    GROUP_ORDER.map(async (key) => {
+      if (LOG_GROUPS.has(key) && scope !== key) return { key, items: null };
+      return visibility[key]
+        ? { key, items: await SEARCHERS[key](q, auth, sources) }
+        : { key, items: [] };
+    }),
   );
 
-  const counts = { zones: 0, records: 0, config: 0, requests: 0, audit: 0 };
+  const counts: SearchResponse["counts"] = {
+    zones: 0,
+    records: 0,
+    config: 0,
+    requests: null,
+    audit: null,
+  };
   const groups: SearchGroup[] = [];
   for (const { key, items } of results) {
+    if (items === null) continue;
     counts[key] = items.length;
     if (items.length === 0 || (scope !== "all" && scope !== key)) continue;
     items.sort((a, b) => b.score - a.score || a.title.localeCompare(b.title));

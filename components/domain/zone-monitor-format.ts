@@ -13,10 +13,11 @@
  * into the client bundle, but a shape change there fails typecheck here.
  */
 
-import type { FindingSeverity, ZoneFinding } from "@/lib/dns/zone-checks";
+import type { FindingSeverity, ZoneFinding, ZoneFindingFix } from "@/lib/dns/zone-checks";
 import type { ZoneMonitorResult, ZoneMonitorState } from "@/lib/monitoring/zone-monitor";
+import { orderChipsByCount } from "./chip-order";
 
-export type { FindingSeverity, ZoneFinding, ZoneMonitorResult, ZoneMonitorState };
+export type { FindingSeverity, ZoneFinding, ZoneFindingFix, ZoneMonitorResult, ZoneMonitorState };
 
 /** A row's verdict: a finding severity, or `ok` when the zone had no findings. */
 export type ZoneVerdict = FindingSeverity | "ok";
@@ -25,6 +26,18 @@ export type DelegationStatus = ZoneMonitorResult["summary"]["delegation"];
 
 /** Worst first; the default sort and the chip order. */
 export const VERDICT_ORDER: readonly ZoneVerdict[] = ["error", "warn", "info", "ok"];
+
+/**
+ * The verdict chips, ordered like the Reverse DNS status chips: biggest count
+ * first, empty verdicts last. Info (nothing to act on) never jumps ahead of
+ * errors, warnings or OK.
+ */
+export function orderVerdictChips(counts: Readonly<Record<ZoneVerdict, number>>): ZoneVerdict[] {
+  return orderChipsByCount(
+    { order: VERDICT_ORDER, passive: "info", passiveAfter: new Set(["error", "warn", "ok"]) },
+    counts,
+  );
+}
 
 export const VERDICT_LABEL: Record<ZoneVerdict, string> = {
   error: "Error",
@@ -79,8 +92,31 @@ export function resultKey(result: Pick<ZoneMonitorResult, "zone" | "server">): s
   return `${result.server}|${result.zone}`;
 }
 
+/** "1 zone", "3 zones", "3 addresses": sibilant endings take "es". */
 export function plural(n: number, word: string): string {
-  return `${n} ${word}${n === 1 ? "" : "s"}`;
+  if (n === 1) return `${n} ${word}`;
+  const suffix = /(s|x|z|ch|sh)$/i.test(word) ? "es" : "s";
+  return `${n} ${word}${suffix}`;
+}
+
+/** One-line text for a finding's suggested fix, shown under the finding. */
+export function describeFix(fix: ZoneFindingFix): string {
+  switch (fix.kind) {
+    case "soa.mname":
+      return `Suggested fix: set the SOA MNAME to ${fix.suggested}`;
+  }
+}
+
+/**
+ * The SOA content with only its first field (MNAME) replaced. RNAME, serial
+ * and timers are kept as they are; PowerDNS bumps the serial itself on the
+ * write (SOA-EDIT-API).
+ */
+export function withSoaMname(content: string, mname: string): string {
+  const fields = content.trim().split(/\s+/);
+  if (fields.length < 2) return content;
+  fields[0] = mname;
+  return fields.join(" ");
 }
 
 const SECOND_MS = 1000;
@@ -95,6 +131,17 @@ export function formatInterval(ms: number): string {
   if (ms >= HOUR_MS && ms % HOUR_MS === 0) return `every ${plural(ms / HOUR_MS, "hour")}`;
   if (ms >= MINUTE_MS && ms % MINUTE_MS === 0) return `every ${plural(ms / MINUTE_MS, "minute")}`;
   return `every ${plural(Math.round(ms / SECOND_MS), "second")}`;
+}
+
+/**
+ * True once the scheduled run's moment has passed. The header then says "due
+ * now" rather than counting into the past, which reads like a stuck scheduler;
+ * the run starts within moments, or is queued behind a partial check.
+ */
+export function isNextRunDue(nextCycleAt: string | null, now: number): boolean {
+  if (!nextCycleAt) return false;
+  const at = Date.parse(nextCycleAt);
+  return Number.isFinite(at) && at <= now;
 }
 
 /** Probe duration: sub-second in ms, otherwise one decimal of seconds. */

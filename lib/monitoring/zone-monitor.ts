@@ -111,6 +111,8 @@ interface State {
   reverseNotOk: number;
   /** Debounce for "zones without a result yet, check them now". */
   catchUp: NodeJS.Timeout | null;
+  /** A full cycle was asked for while a partial one ran: run it as soon as that ends. */
+  pendingFull?: boolean;
 }
 
 declare global {
@@ -244,6 +246,8 @@ interface ProbeContext {
   roots: string[];
   rootsReachable: boolean;
   reverse: Map<string, { addresses: number; missing: number; mismatch: number }>;
+  /** Slugs of standalone backends whose operator accepts single-nameserver zones. */
+  acceptSingleNameserver: ReadonlySet<string>;
 }
 
 async function probeZone(z: ScannedZone, ctx: ProbeContext): Promise<ZoneMonitorResult> {
@@ -296,6 +300,7 @@ async function probeZone(z: ScannedZone, ctx: ProbeContext): Promise<ZoneMonitor
     zone: z.name,
     horizon: z.horizon,
     pdns: { serial: z.serial, soa: z.soa, nsNames: z.nsNames, dnskeys, glue: z.glue },
+    acceptSingleNameserver: ctx.acceptSingleNameserver.has(z.server),
     delegation,
     nameservers,
     resolvers,
@@ -441,7 +446,18 @@ async function runCycle(opts: {
     ? await rootsReachable(roots)
     : true;
   state.offline = !reachable;
-  const ctx: ProbeContext = { roots, rootsReachable: reachable, reverse: reverseTallies(scan) };
+  const ctx: ProbeContext = {
+    roots,
+    rootsReachable: reachable,
+    reverse: reverseTallies(scan),
+    // A grouped backend's redundancy is the group's business: the acceptance
+    // only counts on a standalone backend, whatever the column says.
+    acceptSingleNameserver: new Set(
+      scan.servers
+        .filter((s) => s.monitorAcceptSingleNameserver && s.clusterId === null)
+        .map((s) => s.slug),
+    ),
+  };
   const seen = new Set<string>();
   const dedup = new Map<string, ScannedZone>();
   for (const z of scan.zones)
@@ -476,7 +492,6 @@ async function runCycle(opts: {
   if (!opts.only) {
     for (const k of [...state.results.keys()]) if (!seen.has(k)) state.results.delete(k);
     state.lastCycleAt = Date.now();
-    state.nextCycleAt = Date.now() + zoneMonitorConfig.intervalMs;
   }
   await syncAdvisories(
     opts.only ? [...state.results.values()] : results,
@@ -490,7 +505,13 @@ function cycle(opts: {
   immediate: boolean;
   only?: ReadonlyArray<{ zone: string; server: string }>;
 }): Promise<void> {
-  if (state.inFlight) return state.inFlight;
+  if (state.inFlight) {
+    // A full cycle must not be lost behind a partial one (the new-zone
+    // catch-up): it would leave "Last run" empty and the schedule stale for a
+    // whole interval. Run it as soon as the current one ends.
+    if (!opts.only) state.pendingFull = true;
+    return state.inFlight;
+  }
   state.inFlight = withRequestId(newSystemRequestId(), () => runCycle(opts))
     .catch((err) => {
       logger.warn(
@@ -500,8 +521,27 @@ function cycle(opts: {
     })
     .finally(() => {
       state.inFlight = null;
+      if (state.pendingFull) {
+        state.pendingFull = false;
+        void cycle({ immediate: false });
+      }
     });
   return state.inFlight;
+}
+
+/**
+ * The periodic schedule. One timer at a time, re-armed after each scheduled
+ * run, so `nextCycleAt` is always the moment the next run really starts
+ * (a setInterval kept ticking on its own clock while the page showed another).
+ */
+function scheduleNextCycle(delayMs: number): void {
+  if (state.timer) clearTimeout(state.timer);
+  state.nextCycleAt = Date.now() + delayMs;
+  // The handle stays set while the run is in progress, so a render calling
+  // ensureZoneMonitorRunning() then never starts a second schedule.
+  state.timer = setTimeout(() => {
+    void cycle({ immediate: false }).finally(() => scheduleNextCycle(zoneMonitorConfig.intervalMs));
+  }, delayMs);
 }
 
 declare global {
@@ -539,9 +579,7 @@ export function ensureZoneMonitorRunning(): void {
     return;
   }
   if (state.timer) return;
-  state.timer = setInterval(() => void cycle({ immediate: false }), zoneMonitorConfig.intervalMs);
-  state.nextCycleAt = Date.now() + FIRST_CYCLE_DELAY_MS;
-  setTimeout(() => void cycle({ immediate: false }), FIRST_CYCLE_DELAY_MS);
+  scheduleNextCycle(FIRST_CYCLE_DELAY_MS);
 }
 
 /**

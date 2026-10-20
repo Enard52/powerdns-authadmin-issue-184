@@ -43,6 +43,7 @@ import {
   Shield,
   User,
   Users,
+  History,
   type LucideIcon,
 } from "lucide-react";
 import { apiFetch } from "@/lib/client/api-fetch";
@@ -83,6 +84,15 @@ const TABS: ReadonlyArray<{ key: SearchScope; label: string }> = [
   { key: "audit", label: "Audit" },
 ];
 
+/**
+ * The request and audit logs sit apart from the everyday tabs: "All" never
+ * searches them (they are big and rarely what a search is for), each is
+ * searched only when its own tab is picked, and neither is remembered as the
+ * tab to open with.
+ */
+const LOG_SCOPES: ReadonlySet<SearchScope> = new Set<SearchScope>(["requests", "audit"]);
+const LOG_TAB_HINT = "Searched only when this tab is picked; All covers zones, records and config.";
+
 const KIND_ICON: Record<SearchItemKind, LucideIcon> = {
   zone: Globe,
   record: FileText,
@@ -101,16 +111,10 @@ const KIND_ICON: Record<SearchItemKind, LucideIcon> = {
 
 /** The inline columns of a single-tab list, in order, with their widths. */
 const META_COLUMNS: Record<SearchGroupKey, ReadonlyArray<{ key: string; className: string }>> = {
-  zones: [
-    { key: "backend", className: "w-28" },
-    { key: "horizon", className: "w-20" },
-    { key: "kind", className: "w-20" },
-  ],
-  records: [
-    { key: "type", className: "w-14 font-medium" },
-    { key: "content", className: "w-56 font-mono" },
-    { key: "zone", className: "w-36" },
-  ],
+  // Zones and records carry more than fits in columns: they render
+  // <ResultFacts> in every view instead.
+  zones: [],
+  records: [],
   config: [
     { key: "section", className: "w-28" },
     { key: "value", className: "w-40" },
@@ -143,18 +147,108 @@ interface OptionRow {
 function readStoredScope(): SearchScope | null {
   try {
     const raw = window.localStorage.getItem(SCOPE_STORAGE_KEY);
-    return TABS.some((t) => t.key === raw) ? (raw as SearchScope) : null;
+    const known = TABS.some((t) => t.key === raw);
+    return known && !LOG_SCOPES.has(raw as SearchScope) ? (raw as SearchScope) : null;
   } catch {
     return null;
   }
 }
 
+const RECENT_STORAGE_KEY = "pda.search.recent";
+const RECENT_LIMIT = 5;
+
+/** Queries that led somewhere, newest first; kept in this browser only. */
+function readRecent(): string[] {
+  try {
+    const raw: unknown = JSON.parse(window.localStorage.getItem(RECENT_STORAGE_KEY) ?? "[]");
+    return Array.isArray(raw)
+      ? raw.filter((x): x is string => typeof x === "string").slice(0, RECENT_LIMIT)
+      : [];
+  } catch {
+    return [];
+  }
+}
+
+function writeRecent(list: readonly string[]): void {
+  try {
+    if (list.length === 0) window.localStorage.removeItem(RECENT_STORAGE_KEY);
+    else window.localStorage.setItem(RECENT_STORAGE_KEY, JSON.stringify(list));
+  } catch {
+    // Private mode / blocked storage: recents simply are not kept.
+  }
+}
+
 function storeScope(scope: SearchScope): void {
+  if (LOG_SCOPES.has(scope)) return;
   try {
     window.localStorage.setItem(SCOPE_STORAGE_KEY, scope);
   } catch {
     // Private mode / blocked storage: the scope simply is not remembered.
   }
+}
+
+const FACT = "rounded px-1 py-0.5 font-mono text-[0.625rem] leading-none tracking-wide uppercase";
+const FACT_TONE = {
+  neutral: "bg-[color:var(--color-fg-muted)]/10 text-[color:var(--color-fg-muted)]",
+  accent: "bg-[color:var(--color-accent)]/15 text-[color:var(--color-accent)]",
+  orange: "bg-[color:var(--color-orange)]/15 text-[color:var(--color-orange-fg)]",
+  success: "bg-[color:var(--color-success)]/15 text-[color:var(--color-success-fg)]",
+  warn: "bg-[color:var(--color-warn)]/15 text-[color:var(--color-warn-fg)]",
+} as const;
+
+/**
+ * Where a zone or record lives and what state it is in, as the zones list
+ * shows it: backend, CLUSTER / STANDALONE, INTERNAL / PUBLIC, then per kind
+ * the zone's DNSSEC, serial and size or the record's TTL and value count.
+ * Read from the item's meta, so a field the index did not know is skipped.
+ */
+function ResultFacts({ item }: { item: SearchItem }) {
+  const m = item.meta ?? {};
+  const facts: Array<{ label: string; tone: keyof typeof FACT_TONE; title: string }> = [];
+  const add = (label: string | undefined, tone: keyof typeof FACT_TONE, title: string) => {
+    if (label) facts.push({ label, tone, title });
+  };
+  if (item.group === "records") add(m["zone"], "neutral", "Zone");
+  if (m["backend"]) {
+    const cluster = m["backendType"] === "cluster";
+    add(m["backend"], "neutral", cluster ? "Cluster" : "Backend");
+    add(cluster ? "cluster" : "standalone", cluster ? "accent" : "neutral", "Backend type");
+  }
+  if (m["horizon"])
+    add(
+      m["horizon"],
+      m["horizon"] === "internal" ? "orange" : "neutral",
+      m["horizon"] === "internal" ? "Internal zone (split horizon)" : "Public zone",
+    );
+  if (item.group === "zones") {
+    add(m["kind"], "neutral", "Zone kind");
+    if (m["dnssec"])
+      add(
+        m["dnssec"] === "signed" ? "dnssec" : "unsigned",
+        m["dnssec"] === "signed" ? "success" : "neutral",
+        "DNSSEC",
+      );
+    if (m["serial"]) add(`serial ${m["serial"]}`, "neutral", "SOA serial");
+    if (m["rrsets"]) add(`${m["rrsets"]} rrsets`, "neutral", "Record sets in the zone");
+  } else {
+    if (m["ttl"]) add(`ttl ${m["ttl"]}`, "neutral", "TTL (seconds)");
+    if (m["values"]) add(`${m["values"]} values`, "neutral", "Records in this set");
+    if (m["disabled"]) add(`${m["disabled"]} disabled`, "warn", "Disabled records in this set");
+  }
+  if (facts.length === 0) return null;
+  return (
+    <span className="flex min-w-0 flex-wrap items-center gap-1">
+      {facts.map((f) => (
+        <span
+          key={`${f.title}:${f.label}`}
+          className={`${FACT} ${FACT_TONE[f.tone]}`}
+          title={f.title}
+        >
+          {f.label}
+        </span>
+      ))}
+    </span>
+  );
 }
 
 function formatMeta(key: string, value: string): string {
@@ -359,8 +453,25 @@ export function GlobalSearch({ visibility, quickLinks }: GlobalSearchProps) {
     document.getElementById(activeId)?.scrollIntoView({ block: "nearest" });
   }, [activeId]);
 
+  const [recent, setRecent] = useState<string[]>([]);
+  useEffect(() => {
+    if (open) setRecent(readRecent());
+  }, [open]);
+  const clearRecent = useCallback(() => {
+    writeRecent([]);
+    setRecent([]);
+  }, []);
+
   const go = useCallback(
     (href: string, newTab: boolean) => {
+      // A query that led somewhere is worth offering again next time.
+      if (trimmed) {
+        const next = [
+          trimmed,
+          ...readRecent().filter((x) => x.toLowerCase() !== trimmed.toLowerCase()),
+        ].slice(0, RECENT_LIMIT);
+        writeRecent(next);
+      }
       if (newTab) {
         window.open(href, "_blank", "noopener");
         return;
@@ -368,7 +479,7 @@ export function GlobalSearch({ visibility, quickLinks }: GlobalSearchProps) {
       setOpen(false);
       router.push(href);
     },
-    [router],
+    [router, trimmed],
   );
 
   const selectScope = useCallback((next: SearchScope) => {
@@ -468,9 +579,12 @@ export function GlobalSearch({ visibility, quickLinks }: GlobalSearchProps) {
     if (!data || showingQuickLinks) return null;
     if (key === "all")
       return Object.entries(data.counts).reduce(
-        (sum, [k, n]) => sum + (visibility[k as SearchGroupKey] ? n : 0),
+        (sum, [k, n]) =>
+          sum +
+          (visibility[k as SearchGroupKey] && !LOG_SCOPES.has(k as SearchScope) ? (n ?? 0) : 0),
         0,
       );
+    // null = that log was not searched for this query: show no number at all.
     return data.counts[key];
   };
 
@@ -531,9 +645,8 @@ export function GlobalSearch({ visibility, quickLinks }: GlobalSearchProps) {
         {renderIcon(it.kind, selected)}
         <span className="flex min-w-0 flex-1 flex-col gap-0.5">
           <span className="flex min-w-0 items-center gap-2">
-            {/* Several records share an owner name; the type tells them apart at a glance
-                (the Records tab has its own type column). */}
-            {!dense && it.group === "records" && it.meta?.["type"] ? (
+            {/* Several records share an owner name; the type tells them apart at a glance. */}
+            {it.group === "records" && it.meta?.["type"] ? (
               <span className="shrink-0 rounded border border-[color:var(--color-border)] px-1.5 font-mono text-[0.68rem] leading-5 text-[color:var(--color-fg-muted)]">
                 {it.meta["type"]}
               </span>
@@ -547,6 +660,7 @@ export function GlobalSearch({ visibility, quickLinks }: GlobalSearchProps) {
               <Highlighted text={it.subtitle} ranges={it.subtitleRanges} />
             </span>
           ) : null}
+          {it.group === "zones" || it.group === "records" ? <ResultFacts item={it} /> : null}
           {cells.length > 0 ? (
             <span className="truncate text-xs text-[color:var(--color-fg-muted)] md:hidden">
               {cells.map((c) => formatMeta(c.key, c.value)).join(" · ")}
@@ -597,6 +711,45 @@ export function GlobalSearch({ visibility, quickLinks }: GlobalSearchProps) {
     body =
       quickLinks.length > 0 ? (
         <div role="group" aria-labelledby={`${baseId}-quick-label`}>
+          {recent.length > 0 ? (
+            <div className="mb-2 border-b border-[color:var(--color-border)] pb-2">
+              <div className="flex items-center justify-between px-2.5 pt-2 pb-1">
+                <span className="text-[0.68rem] font-semibold tracking-wide text-[color:var(--color-fg-subtle)] uppercase">
+                  Recent searches
+                </span>
+                <button
+                  type="button"
+                  onClick={() => {
+                    clearRecent();
+                    inputRef.current?.focus();
+                  }}
+                  className="rounded px-1.5 text-xs text-[color:var(--color-fg-muted)] hover:text-[color:var(--color-fg)]"
+                >
+                  Clear
+                </button>
+              </div>
+              <div className="flex flex-wrap gap-1.5 px-2.5">
+                {recent.map((r) => (
+                  <button
+                    key={r}
+                    type="button"
+                    onClick={() => {
+                      setQuery(r);
+                      setActive(0);
+                      inputRef.current?.focus();
+                    }}
+                    className="inline-flex max-w-full items-center gap-1.5 rounded-full border border-[color:var(--color-border)] px-2.5 py-1 text-xs text-[color:var(--color-fg)] hover:border-[color:var(--color-accent)]/50 hover:bg-[color:var(--color-bg-subtle)]"
+                  >
+                    <History
+                      aria-hidden
+                      className="h-3 w-3 shrink-0 text-[color:var(--color-fg-subtle)]"
+                    />
+                    <span className="truncate">{r}</span>
+                  </button>
+                ))}
+              </div>
+            </div>
+          ) : null}
           {groupHeading(`${baseId}-quick-label`, "Jump to")}
           <div className="grid grid-cols-1 gap-1 md:grid-cols-2 xl:grid-cols-3">
             {quickLinks.map((l) => {
@@ -617,8 +770,10 @@ export function GlobalSearch({ visibility, quickLinks }: GlobalSearchProps) {
             })}
           </div>
           <p className="mx-2.5 mt-3 mb-1 rounded-lg bg-[color:var(--color-bg-subtle)] px-3 py-2 text-xs text-[color:var(--color-fg-muted)]">
-            Search zone names, record names and values, settings, people, backends and the logs.
-            Letters can be skipped: <code className="font-mono">exmp</code> finds{" "}
+            Search zone names, record names and values, settings, people and backends; pick{" "}
+            <strong className="font-medium">Requests</strong> or{" "}
+            <strong className="font-medium">Audit</strong> to search the logs. Letters can be
+            skipped: <code className="font-mono">exmp</code> finds{" "}
             <code className="font-mono">example.com</code>.
           </p>
         </div>
@@ -751,7 +906,7 @@ export function GlobalSearch({ visibility, quickLinks }: GlobalSearchProps) {
                   enterKeyHint="go"
                   maxLength={MAX_QUERY_LENGTH}
                   value={query}
-                  placeholder="Search zones, records, config…"
+                  placeholder="Search zones, records, settings, people…"
                   onChange={(e) => {
                     setQuery(e.target.value);
                     setActive(0);
@@ -781,45 +936,58 @@ export function GlobalSearch({ visibility, quickLinks }: GlobalSearchProps) {
                 {tabs.map((t, i) => {
                   const selected = t.key === scope;
                   const count = countFor(t.key);
+                  const firstLog =
+                    LOG_SCOPES.has(t.key) && !LOG_SCOPES.has(tabs[i - 1]?.key ?? "all");
                   return (
-                    <button
-                      key={t.key}
-                      ref={(el) => {
-                        if (el) tabRefs.current.set(t.key, el);
-                        else tabRefs.current.delete(t.key);
-                      }}
-                      type="button"
-                      role="tab"
-                      id={`${baseId}-tab-${t.key}`}
-                      aria-selected={selected}
-                      aria-controls={listboxId}
-                      tabIndex={selected ? 0 : -1}
-                      onClick={() => {
-                        selectScope(t.key);
-                        inputRef.current?.focus();
-                      }}
-                      onKeyDown={(e) => onTabKeyDown(e, i)}
-                      className={[
-                        "inline-flex h-7 shrink-0 items-center gap-1.5 rounded-full border px-3 text-xs font-medium transition-colors motion-reduce:transition-none",
-                        selected
-                          ? "border-[color:var(--color-accent)]/45 bg-[color:var(--color-accent)]/10 text-[color:var(--color-accent)]"
-                          : "border-[color:var(--color-border)] text-[color:var(--color-fg-muted)] hover:text-[color:var(--color-fg)]",
-                      ].join(" ")}
-                    >
-                      {t.label}
-                      {count !== null ? (
+                    <Fragment key={t.key}>
+                      {firstLog ? (
                         <span
-                          className={[
-                            "font-mono text-[0.68rem] tabular-nums",
-                            selected
-                              ? "text-[color:var(--color-accent)]"
-                              : "text-[color:var(--color-fg-subtle)]",
-                          ].join(" ")}
+                          aria-hidden
+                          className="mr-1.5 ml-1 flex shrink-0 items-center gap-2.5 pl-2 text-[0.68rem] font-medium tracking-wide text-[color:var(--color-fg-subtle)] uppercase"
                         >
-                          {count}
+                          <span className="h-4 w-px bg-[color:var(--color-border)]" />
+                          Logs
                         </span>
                       ) : null}
-                    </button>
+                      <button
+                        title={LOG_SCOPES.has(t.key) ? LOG_TAB_HINT : undefined}
+                        ref={(el) => {
+                          if (el) tabRefs.current.set(t.key, el);
+                          else tabRefs.current.delete(t.key);
+                        }}
+                        type="button"
+                        role="tab"
+                        id={`${baseId}-tab-${t.key}`}
+                        aria-selected={selected}
+                        aria-controls={listboxId}
+                        tabIndex={selected ? 0 : -1}
+                        onClick={() => {
+                          selectScope(t.key);
+                          inputRef.current?.focus();
+                        }}
+                        onKeyDown={(e) => onTabKeyDown(e, i)}
+                        className={[
+                          "inline-flex h-7 shrink-0 items-center gap-1.5 rounded-full border px-3 text-xs font-medium transition-colors motion-reduce:transition-none",
+                          selected
+                            ? "border-[color:var(--color-accent)]/45 bg-[color:var(--color-accent)]/10 text-[color:var(--color-accent)]"
+                            : "border-[color:var(--color-border)] text-[color:var(--color-fg-muted)] hover:text-[color:var(--color-fg)]",
+                        ].join(" ")}
+                      >
+                        {t.label}
+                        {count !== null ? (
+                          <span
+                            className={[
+                              "font-mono text-[0.68rem] tabular-nums",
+                              selected
+                                ? "text-[color:var(--color-accent)]"
+                                : "text-[color:var(--color-fg-subtle)]",
+                            ].join(" ")}
+                          >
+                            {count}
+                          </span>
+                        ) : null}
+                      </button>
+                    </Fragment>
                   );
                 })}
               </div>
