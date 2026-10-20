@@ -25,6 +25,7 @@
 [![TypeScript strict](https://img.shields.io/badge/TypeScript-strict-3178C6?logo=typescript&logoColor=white)](tsconfig.json)
 
 **[Website](https://powerdns-authadmin.org/)**  
+**[Docs](https://powerdns-authadmin.org/docs/)**  
 **[Live demo](https://demo.powerdns-authadmin.org/)** (sign in with `admin@example.com` / `change-me-now`)
 
 PowerDNS-AuthAdmin manages one or many PowerDNS Authoritative backends from a single web app. It

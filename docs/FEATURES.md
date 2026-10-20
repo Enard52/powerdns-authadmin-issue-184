@@ -766,7 +766,7 @@ truth; add there first). Names follow `<resource>.<verb>` and line up with the p
 vocabulary where a 1:1 mapping exists. Rows written before a rename keep the old name.
 
 | Action                                                 | Written when                                                                                                                                                    |
-| ------------------------------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------- | ------------------------------------------------- |
+| ------------------------------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `auth.login.success`                                   | A sign-in completed (any method; `after.method` is `local`, `oidc`, `saml`, `ldap`, `webauthn-primary` or `webauthn-second-factor`, `after.provider` the slug). |
 | `auth.login.failure`                                   | A sign-in was refused - bad credentials, lockout, captcha missing/failed, unverified email, MFA step failed.                                                    |
 | `auth.logout`                                          | A session was ended by its owner.                                                                                                                               |
@@ -1125,12 +1125,10 @@ this baseline.
     <img src="../screenshots/light/dashboard-mobile.png" alt="Dashboard on mobile" width="240" />
   </picture>
   &nbsp;
-  <p align="center">
-    <picture>
+  <picture>
     <source media="(prefers-color-scheme: dark)" srcset="../screenshots/dark/zones-list-mobile.png" />
     <img src="../screenshots/light/zones-list-mobile.png" alt="Zones list on mobile" width="240" />
-    </picture>
-  </p>
+  </picture>
 </p>
 
 ### 19.2 One DataTable, every list
